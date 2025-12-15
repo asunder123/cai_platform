@@ -7,6 +7,64 @@ from typing import Dict, List, Tuple
 import re
 from collections import Counter
 
+
+
+def _top_items_from_dict(d: dict, k: int = 5) -> list:
+    """
+    Return top-k keys by score from a dict; if list passed, return first k.
+    """
+    if not d:
+        return []
+    if isinstance(d, dict):
+        try:
+            return [kv[0] for kv in sorted(d.items(), key=lambda kv: (-float(kv[1]), kv[0]))[:k]]
+        except Exception:
+            return list(d.keys())[:k]
+    return list(d)[:k]
+
+
+def _generate_followups(top_signals: list, root_causes: list, archetypes: list, max_q: int = 8) -> list:
+    """
+    Generate simple follow-up questions based on top signals, root causes, and archetypes.
+    """
+    prompts = []
+    buckets = [
+        ("Signals", top_signals),
+        ("Root causes", root_causes),
+        ("Archetypes", archetypes),
+    ]
+    for label, items in buckets:
+        for it in items:
+            prompts.append(f"[{label}] What recent changes or observations directly support '{it}'?")
+            prompts.append(f"[{label}] Provide 2–3 timestamped logs/metrics that confirm or refute '{it}'.")
+            prompts.append(f"[{label}] Is there a reversible action (toggle/rollback/canary) to isolate '{it}'?")
+            if len(prompts) >= max_q:
+                break
+        if len(prompts) >= max_q:
+            break
+
+       # Deduplicate while preserving order
+    seen, uniq = set(), []
+    for p in prompts:
+        if p not in seen:
+            seen.add(p)
+            uniq.append(p)
+
+def _next_turn_prompts(pending_items: list, context_quote: str, limit: int = 3) -> list:
+    """
+    Suggest next user inputs to prolong the chat (continuity prompts).
+    """
+    if not pending_items:
+        pending_items = ["the incident"]
+    base =    base = [
+        f"Attach the top 3 log excerpts with timestamps that relate to: {', '.join(pending_items[:limit])}",
+        f"List the exact changes (IDs, approvers, timestamps) relevant to: {', '.join(pending_items[:limit])}",
+        f"Provide before/after metrics (p95/p99 latency, error rates) referencing: {context_quote}"
+    ]
+
+
+
+
 def contextual_paraphrase(
     text: str,
     signals: Dict[str, float],
@@ -204,10 +262,22 @@ def contextual_paraphrase(
     if attach_in_synthesis and anchored_keywords:
         synthesis_core += " Actions should directly address: " + ", ".join(anchored_keywords) + "."
 
+    
     # -------------------------
     # 7) Sections & output
     # -------------------------
     context_text = f"Prompt context: “{quote}”"
+
+    # Derive top items (model-driven; no hard-coded lexicon)
+    top_signal_names = _top_items_from_dict(signals, k=5)
+    # root_causes / archetypes may be lists already; treat both uniformly
+    rc_list = root_causes if isinstance(root_causes, list) else _top_items_from_dict(root_causes, k=5)
+    arch_list = archetypes if isinstance(archetypes, list) else _top_items_from_dict(archetypes, k=5)
+
+    # Continuity artifacts
+    followups = _generate_followups(top_signal_names, rc_list, arch_list, max_q=8)
+    next_inputs = _next_turn_prompts(top_signal_names or rc_list or arch_list, quote, limit=3)
+
     if include_sections or return_dict:
         sections = {
             "context": context_text,
@@ -216,8 +286,19 @@ def contextual_paraphrase(
             "archetypes": archetypes_text or "No archetypes provided.",
             "synthesis": f"{theme_part} {synthesis_core}".strip()
         }
+
         if return_dict:
+            # Add minimal continuity surface without changing existing callers
+            sections["followups"] = followups
+            sections["next_prompts"] = next_inputs
+            # Optional: a tiny 'state' object that downstream code can use to persist context
+            sections["state"] = {
+                "top_signals": top_signal_names,
+                "root_causes": rc_list,
+                "archetypes": arch_list
+            }
             return sections
+
         summary = (
             f"{sections['context']}\n\n"
             f"{sections['indicators']}\n"
