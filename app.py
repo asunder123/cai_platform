@@ -16,7 +16,7 @@ import spacy
 
 APP_ROOT = Path(__file__).resolve().parent
 MODULE_ROOT = APP_ROOT / "modules"
-DEFAULT_MODEL_PATH = APP_ROOT / "corporate_signal_model"
+DEFAULT_MODEL_PATH = APP_ROOT / "training/model_corporate_signals"
 
 sys.path.insert(0, str(APP_ROOT))
 sys.path.insert(0, str(MODULE_ROOT))
@@ -26,17 +26,73 @@ sys.path.insert(0, str(MODULE_ROOT))
 # AUTO-DETECT + REPAIR MODEL LOCATION
 #################################################################
 
+#################################################################
+# AUTO-DETECT + REPAIR MODEL LOCATION
+#################################################################
+
 def discover_model_paths():
-    """Search for corporate_signal_model anywhere in project."""
+    """
+    Search for spaCy model directories anywhere under APP_ROOT.
+    Prefers 'model_corporate_signals' (current), but supports 'corporate_signal_model' (legacy).
+    Returns a list of actual directory Paths.
+    """
     hits = []
+    preferred_names = {"model_corporate_signals", "corporate_signal_model"}  # current + legacy
+
     for root, dirs, files in os.walk(APP_ROOT):
-        if "corporate_signal_model" in dirs:
-            hits.append(Path(root) / "corporate_signal_model")
+        for d in dirs:
+            if d in preferred_names:
+                hits.append(Path(root) / d)
     return hits
 
 
 def ensure_model_available():
-    """Ensure ML model exists in root-level corporate_signal_model/."""
+    """
+    Ensure ML model exists at root-level training/model_corporate_signals/.
+    - If DEFAULT_MODEL_PATH exists: return it.
+    - Else: if we discover a model elsewhere, move it into DEFAULT_MODEL_PATH.
+    - Returns Path or None.
+    """
+    # If already in the correct place, we’re done.
+    if DEFAULT_MODEL_PATH.exists() and DEFAULT_MODEL_PATH.is_dir():
+        print("✅ Model found in correct location:", DEFAULT_MODEL_PATH)
+        return DEFAULT_MODEL_PATH
+
+    found = discover_model_paths()
+    if not found:
+        print("❌ No model directory named 'model_corporate_signals' or 'corporate_signal_model' found anywhere")
+        return None
+
+    # Choose the best candidate (prefer current naming)
+    def score(p: Path) -> int:
+        return 1 if p.name == "model_corporate_signals" else 0
+    found.sort(key=score, reverse=True)
+
+    src = found[0]
+    # If src is already the desired target, just return
+    if src == DEFAULT_MODEL_PATH:
+        print("✅ Model already located at:", DEFAULT_MODEL_PATH)
+        return DEFAULT_MODEL_PATH
+
+    # Ensure destination parent exists
+    DEFAULT_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    # If a stale/partial destination exists, clean it
+    if DEFAULT_MODEL_PATH.exists():
+        shutil.rmtree(DEFAULT_MODEL_PATH)
+
+    print(f"⚠ Model found at: {src} → moving to {DEFAULT_MODEL_PATH}")
+    try:
+        shutil.move(str(src), str(DEFAULT_MODEL_PATH))
+        print("✅ Model moved to:", DEFAULT_MODEL_PATH)
+        return DEFAULT_MODEL_PATH
+    except Exception as e:
+        print("❌ Failed to move model:", e)
+       
+
+
+def ensure_model_available():
+    """Ensure ML model exists in root-level training/model_corporate_signals/."""
     found = discover_model_paths()
 
     if not found:
