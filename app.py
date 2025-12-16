@@ -268,76 +268,144 @@ if page == "Analyze Case":
 
 
 
+# app.py
+# Streamlit UI for Case Paragraph Query Engine
+# Compatible with FINAL case_engine.py
 
-###############################################################
-# PAGE — Conversational Assistant (Pure FAISS Retrieval)
-###############################################################
-from modules.conv_assistant import CaseConverser
-import streamlit as st
-import json
 
-if page == "Conversational Assistant":
-    st.header("💬 RCA Conversational Assistant (Pure Retrieval)")
+from conv_assistant import build_case_index
 
-    # Persistent converser across interactions
-    if "converser" not in st.session_state:
-        st.session_state.converser = None
+# ============================================================
+# Streamlit Config
+# ============================================================
 
-    # Case description input
-    case_text = st.text_area(
-        "Provide the case description (context for all queries)",
-        height=140,
-        placeholder="Example: Checkout service experienced elevated error rates in prod (ap-south-1) after the last deployment..."
+st.title("📘 Case Paragraph Query Engine")
+st.caption(
+    "Paste a case → it is chunked, indexed, and queried → "
+    "precise sentence-level answers are returned with evidence."
+)
+
+# ============================================================
+# Inputs
+# ============================================================
+
+case_text = st.text_area(
+    "🧾 Case Description",
+    height=300,
+    placeholder="Paste the full case description here..."
+)
+
+query_text = st.text_area(
+    "🔎 Query / Paragraph Question",
+    height=150,
+    placeholder="Ask a question grounded in the case (e.g., cause, fix, timeline)..."
+)
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    chunk_size = st.slider(
+        "Chunk size (words)",
+        min_value=60,
+        max_value=200,
+        value=120
     )
 
-    # Initialize converser when case changes
-    if case_text.strip():
-        if not st.session_state.converser or st.session_state.converser.case_text != case_text.strip():
-            st.session_state.converser = CaseConverser(case_text.strip())
-
-    # User prompt input
-    user_prompt = st.text_input(
-        "Ask a question about the case",
-        placeholder="e.g., What was spiking ?"
+with col2:
+    overlap = st.slider(
+        "Chunk overlap (words)",
+        min_value=10,
+        max_value=80,
+        value=30
     )
 
-    # Process button
-    if st.button("Process Query", type="primary", use_container_width=True):
-        if not case_text.strip():
-            st.warning("Please provide a case description.")
-        elif not user_prompt.strip():
-            st.warning("Please provide a query.")
+with col3:
+    top_k = st.slider(
+        "Top chunks to search",
+        min_value=1,
+        max_value=5,
+        value=3
+    )
+
+sentences_per_chunk = st.slider(
+    "Sentences per chunk",
+    min_value=1,
+    max_value=3,
+    value=1
+)
+
+# ============================================================
+# Execution
+# ============================================================
+
+if st.button("Analyze Case"):
+    if not case_text.strip():
+        st.warning("Please provide a case description.")
+    elif not query_text.strip():
+        st.warning("Please provide a query.")
+    else:
+        # ----------------------------
+        # Build Index
+        # ----------------------------
+        with st.spinner("Building case index..."):
+            case_index = build_case_index(
+                case_text=case_text,
+                chunk_size=chunk_size,
+                overlap=overlap
+            )
+
+        # ----------------------------
+        # Query
+        # ----------------------------
+        with st.spinner("Extracting precise answers..."):
+            results = case_index.query(
+                query_text=query_text,
+                top_k_chunks=top_k,
+                sentences_per_chunk=sentences_per_chunk
+            )
+
+        # ----------------------------
+        # Results
+        # ----------------------------
+        st.subheader("📌 Extracted Answers")
+
+        if not results:
+            st.error("No relevant answers found in the case.")
         else:
-            try:
-                turn = st.session_state.converser.ask(user_prompt.strip())
-            except Exception as e:
-                st.exception(e)
-                st.stop()
+            for i, r in enumerate(results, 1):
+                with st.expander(
+                    f"Answer {i} | "
+                    f"sentence_score={r['sentence_score']:.3f} | "
+                    f"chunk_score={r['chunk_score']:.3f}"
+                ):
+                    st.markdown("**Answer:**")
+                    st.write(r["answer"])
 
-            # Canonical query
-            st.markdown("### ✅ Canonical Query")
-            st.write(turn.canonical or "_(empty)_")
+                    st.markdown("---")
+                    st.markdown("**Source Context:**")
+                    st.write(r["source_chunk"])
 
-            # Direct Answer
-            st.markdown("### 🎯 Direct Answer")
-            st.write(turn.direct_answer or "_No direct answer generated._")
+# ============================================================
+# Transparency / Help
+# ============================================================
 
-            # Diagnostics
-            st.markdown("### ⚙️ Diagnostics")
-            st.write(f"""
-            - Neighbors Used: `{turn.neighbors_used}`
-            - VDB Size: `{turn.vdb_size}`
-            - Embed Dim: `{turn.state.get('embed_dim')}`
-            - Overlap Threshold: `{turn.state.get('overlap_threshold')}`
-            """)
+with st.expander("🔍 How this works"):
+    st.markdown(
+        """
+        **Pipeline**
+        1. Case text is cleaned and chunked with overlap  
+        2. TF-IDF index built over chunks  
+        3. Relevant chunks retrieved using cosine similarity  
+        4. Sentences inside chunks are ranked  
+        5. Most relevant sentences are returned as answers  
 
-            # Optional: Show facets
-            with st.expander("Facets"):
-                st.json(turn.facets)
-
-            # Optional: Show state details
-            with st.expander("State"):
-               st.json(turn.state)
+        **Properties**
+        - Deterministic (no hallucinations)
+        - CPU-only
+        - Fully explainable
+        - Evidence-preserving
+        """
+    )
 
 
 
